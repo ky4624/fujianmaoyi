@@ -3,19 +3,20 @@ import requests
 from lxml import etree
 import math
 from db import mongoer,sqliter
-from config import db_name, collection_name, indexurl,cookies,headers,mother
+from config import db_name, collection_name,collection_find_name, indexurl,cookies,headers,mother,indexFindUrl,findurl,cookies_find,headers_find
 from concurrent.futures import ThreadPoolExecutor
 import re
 
 class indexer:
     def __init__(self):
-        self.cl = mongoer(db_name,collection_name)
+        self.cl = mongoer(db_name)
         self.db = self.cl.db
-        self.collection = self.cl.collection
+        self.collection = self.db[collection_name]
+        self.collection_find = self.db[collection_find_name]
         self.count = 0
 
     def visit(self, url):
-        pagef = int((int(re.findall(r'start=(.*?)&sz', url)[0])-1)/mother)
+        pagef = int((int(re.findall(r'start=(.*?)&sz', url)[0])-1)/mother)+1
         for i in range(5):
             print(f'爬取网页第{pagef}页第{i}次')
             response = requests.get(url, cookies=cookies, headers=headers,  timeout=100)
@@ -30,7 +31,7 @@ class indexer:
         text = self.visit(url)
         ht = etree.HTML(text)
         self.count = int(ht.xpath('//span[contains(@class,"search-result-count")]')[0].text.replace(',','').replace('Results','').strip())
-        self.collection.insert_one({"page": page0, "text": text, "url": url})
+        self.collection.insert_one({"page": page0+1, "text": text, "url": url})
         pages = math.ceil(self.count/mother)+1
 
         #单线程
@@ -47,23 +48,53 @@ class indexer:
             urls.append(url)
         with ThreadPoolExecutor(max_workers=10) as executor:
             results = executor.map(self.visit, urls)
-        res = [{"page": page1, "text": text1, "url": url1} for url1,page1, text1 in zip(urls, range(1,pages), results)]
-        
+        res= []
+        for url1, text1 in zip(urls, results):
+            res.append({"page": int((int(re.findall(r'start=(.*?)&sz', url1)[0])-1)/mother)+1, "text": text1, "url": url1})
+            if len(res)==1000:
+                self.collection.insert_many(res)
+                res = []
         self.collection.insert_many(res)
+        res = []
+   
 
+    def visitDetail(self,item0):
+        url = item0['Detailurl']
+
+        for i in range(5):
+            print(f'爬取详情页第{i}次')
+            response = requests.get(url, cookies=cookies_find, headers=headers_find,  timeout=100)
+            print(response.status_code)
+            if "pid" in response.text:
+                return response.json(),item0
+        return None
 
 
     def paser(self):
+        find_list = []
         datas = self.collection.find().to_list()
-
         for data in datas:
-            text = data['text']
-            ht = etree.HTML(text)
+            html = data['text']
+            ht = etree.HTML(html)
+            for item in ht.xpath('//a[contains(@class,"pdpLink")]'):
+                item1 = {}
+                url = item.get('href')
+                proName = url.split('/')[-2]
+                proNo = url.split('/')[-1].split('.')[0]
+                indexFindUrlq = indexFindUrl.format(proName, proNo)
+                item1['url'] = indexFindUrlq
+                item1['pid'] = proNo
+                item1['Detailurl'] = findurl.format(proNo, proNo, proNo, proNo, proNo, proNo, proNo, proNo, proNo)
+                find_list.append(item1)
 
-        
+
+        #单线程
+        for finditem in find_list[:1]:
+            res = self.visitDetail(finditem)
+            print(res[0])
 
     def main(self):
-        ym = int(input('请输入要执行的操作：\n1. 爬取网页\n2. 解析网页\n请选择下标:'))
+        ym = int(input('请输入要执行的操作：\n1. 爬取网页\n2. 解析网页找到详情原始数据\n请选择下标:'))
         if ym==1:
             self.start()
         elif ym==2:
